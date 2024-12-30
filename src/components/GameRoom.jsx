@@ -23,7 +23,6 @@ import useAudio from '../hooks/useAudio'
 const TURN_DURATION = 60
 
 function GameRoom({ roomId, username, onLeaveRoom }) {
-  const [socket, setSocket] = useState(null)
   const [gameState, setGameState] = useState(() => {
     // localStorage'dan oyun durumunu al
     const savedGameState = localStorage.getItem(`gameState_${roomId}`);
@@ -72,7 +71,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }, [messages])
 
   useEffect(() => {
-    // Socket zaten bağlı değilse bağlan
+    // Socket'i bağla
     if (!socket.connected) {
       socket.connect();
     }
@@ -101,8 +100,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         isClosable: true,
       });
     });
-
-    setSocket(socket);
 
     socket.on('roomUpdate', (updatedState) => {
       console.log('Oda güncellendi:', updatedState);
@@ -251,7 +248,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }, [roomId, username, toast]);
 
   const handleTeamSelect = (team) => {
-    if (!socket) {
+    if (!socket.connected) {
       console.error('Socket bağlantısı yok')
       return
     }
@@ -261,7 +258,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }
 
   const handleStartGame = () => {
-    if (!socket) {
+    if (!socket.connected) {
       console.error('Socket bağlantısı yok');
       return;
     }
@@ -271,8 +268,8 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
 
   const handleGuessSubmit = (e) => {
     e.preventDefault();
-    if (!socket || !guess.trim()) {
-      console.log('Tahmin gönderilemedi:', { socket: !!socket, guess });
+    if (!socket.connected || !guess.trim()) {
+      console.log('Tahmin gönderilemedi:', { socketConnected: socket.connected, guess });
       return;
     }
 
@@ -316,13 +313,13 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }
 
   const canSeeWord = () => {
-    if (!socket || !isMyTeamsTurn()) return false;
+    if (!socket.connected || !isMyTeamsTurn()) return false;
     const myTeamList = gameState.currentTeam === 'team1' ? gameState.team1 : gameState.team2;
     return myTeamList.length > 0 && myTeamList[0].username === username;
   };
 
   const canMakeGuess = () => {
-    if (!socket || !isMyTeamsTurn()) return false;
+    if (!socket.connected || !isMyTeamsTurn()) return false;
     const myTeamList = gameState.currentTeam === 'team1' ? gameState.team1 : gameState.team2;
     return myTeamList.length > 0 && myTeamList[0].username !== username;
   };
