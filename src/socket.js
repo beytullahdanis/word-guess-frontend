@@ -13,4 +13,17 @@ const socket = io(SOCKET_URL, {
   timeout: 60000
 });
 
+// Bağlantı durumunu izle
+socket.on('connect', () => {
+  console.log('Socket.IO bağlantısı başarılı');
+});
+
+socket.on('connect_error', (error) => {
+  console.error('Socket.IO bağlantı hatası:', error);
+});
+
+socket.on('disconnect', (reason) => {
+  console.log('Socket.IO bağlantısı kesildi:', reason);
+});
+
 export default socket; 
