@@ -1,7 +1,8 @@
 import { io } from 'socket.io-client';
 
 const SOCKET_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3002';
-console.log(SOCKET_URL);
+console.log('Connecting to server:', SOCKET_URL);
+
 const socket = io(SOCKET_URL, {
   autoConnect: false,
   transports: ['polling', 'websocket'],
