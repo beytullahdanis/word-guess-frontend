@@ -17,10 +17,9 @@ import {
   Center,
 } from '@chakra-ui/react'
 import { FaMicrophone, FaMicrophoneSlash } from 'react-icons/fa'
-import io from 'socket.io-client'
+import socket from '../socket'
 import useAudio from '../hooks/useAudio'
 
-const SOCKET_SERVER = 'http://localhost:3002'
 const TURN_DURATION = 60
 
 function GameRoom({ roomId, username, onLeaveRoom }) {
@@ -73,32 +72,26 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }, [messages])
 
   useEffect(() => {
-    const newSocket = io(SOCKET_SERVER, {
-      transports: ['polling', 'websocket'],
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      timeout: 10000,
-      withCredentials: false
-    });
+    // Socket zaten bağlı değilse bağlan
+    if (!socket.connected) {
+      socket.connect();
+    }
 
-    newSocket.on('connect', () => {
-      console.log('Socket bağlantısı kuruldu:', newSocket.id);
+    console.log('Socket bağlantısı kuruldu:', socket.id);
       
-      const currentTeam = localStorage.getItem(`team_${roomId}`);
-      newSocket.emit('joinRoom', { 
-        roomId, 
-        username,
-        currentTeam
-      });
-
-      if (currentTeam) {
-        console.log('Önceki takıma yeniden katılınıyor:', currentTeam);
-        newSocket.emit('selectTeam', { roomId, team: currentTeam });
-      }
+    const currentTeam = localStorage.getItem(`team_${roomId}`);
+    socket.emit('joinRoom', { 
+      roomId, 
+      username,
+      currentTeam
     });
 
-    newSocket.on('connect_error', (error) => {
+    if (currentTeam) {
+      console.log('Önceki takıma yeniden katılınıyor:', currentTeam);
+      socket.emit('selectTeam', { roomId, team: currentTeam });
+    }
+
+    socket.on('connect_error', (error) => {
       console.error('Socket bağlantı hatası:', error);
       toast({
         title: 'Bağlantı Hatası',
@@ -109,9 +102,9 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       });
     });
 
-    setSocket(newSocket);
+    setSocket(socket);
 
-    newSocket.on('roomUpdate', (updatedState) => {
+    socket.on('roomUpdate', (updatedState) => {
       console.log('Oda güncellendi:', updatedState);
       setGameState(prev => ({
         ...prev,
@@ -119,7 +112,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       }));
     });
 
-    newSocket.on('gameStarted', (gameData) => {
+    socket.on('gameStarted', (gameData) => {
       console.log('Oyun başladı:', gameData);
       setGameState(prev => ({
         ...prev,
@@ -139,7 +132,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       });
     });
 
-    newSocket.on('preparationUpdate', (data) => {
+    socket.on('preparationUpdate', (data) => {
       console.log('Hazırlık süresi güncellendi:', data);
       setGameState(prev => ({
         ...prev,
@@ -149,7 +142,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       }));
     });
 
-    newSocket.on('timeUpdate', (data) => {
+    socket.on('timeUpdate', (data) => {
       console.log('Süre güncellendi:', data);
       setGameState(prev => ({
         ...prev,
@@ -159,7 +152,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       }));
     });
 
-    newSocket.on('teamSwitch', (data) => {
+    socket.on('teamSwitch', (data) => {
       console.log('Takım değişti:', data);
       setGameState(prev => ({
         ...prev,
@@ -178,7 +171,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       });
     });
 
-    newSocket.on('correctGuess', (data) => {
+    socket.on('correctGuess', (data) => {
       console.log('Doğru tahmin yapıldı:', data);
       setGameState(prev => ({
         ...prev,
@@ -204,7 +197,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       });
     });
 
-    newSocket.on('wordUpdate', (data) => {
+    socket.on('wordUpdate', (data) => {
       console.log('Yeni kelime alındı:', data.currentWord);
       setGameState(prevState => ({
         ...prevState,
@@ -215,7 +208,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       }));
     });
 
-    newSocket.on('gameEnded', (data) => {
+    socket.on('gameEnded', (data) => {
       console.log('Oyun bitti:', data);
       setGameState(prev => ({
         ...prev,
@@ -245,19 +238,17 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     return () => {
-      if (newSocket) {
-        console.log('Socket bağlantısı kapatılıyor');
-        newSocket.off('correctGuess');
-        newSocket.off('wordUpdate');
-        newSocket.off('teamSwitch');
-        newSocket.off('gameStarted');
-        newSocket.off('timeUpdate');
-        newSocket.off('gameEnded');
-        newSocket.off('roomUpdate');
-        newSocket.disconnect();
-      }
+      console.log('Socket event listeners temizleniyor');
+      socket.off('correctGuess');
+      socket.off('wordUpdate');
+      socket.off('teamSwitch');
+      socket.off('gameStarted');
+      socket.off('timeUpdate');
+      socket.off('gameEnded');
+      socket.off('roomUpdate');
+      socket.off('preparationUpdate');
     };
-  }, [roomId, username]);
+  }, [roomId, username, toast]);
 
   const handleTeamSelect = (team) => {
     if (!socket) {
