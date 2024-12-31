@@ -16,30 +16,26 @@ const useAudio = (username) => {
   const startRecording = async () => {
     try {
       checkBrowserSupport();
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeTypes = [
-        'audio/webm',
-        'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
-        'audio/mp4'
-      ];
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 48000,
+          channelCount: 1
+        } 
+      });
 
-      let selectedMimeType = null;
-      for (const mimeType of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(mimeType)) {
-          selectedMimeType = mimeType;
-          break;
-        }
+      // Sabit format kullan
+      const mimeType = 'audio/webm;codecs=opus';
+      
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        throw new Error('Tarayıcınız gerekli ses formatını desteklemiyor');
       }
 
-      if (!selectedMimeType) {
-        throw new Error('Desteklenen ses formatı bulunamadı');
-      }
-
-      console.log('Kullanılan ses formatı:', selectedMimeType);
+      console.log('Kullanılan ses formatı:', mimeType);
       
       const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: selectedMimeType,
+        mimeType: mimeType,
         audioBitsPerSecond: 128000
       });
 
@@ -49,13 +45,17 @@ const useAudio = (username) => {
             const reader = new FileReader();
             reader.onloadend = () => {
               const base64Audio = reader.result.split(',')[1];
-              socket.emit('audio', {
-                audio: base64Audio,
-                type: selectedMimeType,
-                username: username,
-                timestamp: Date.now()
-              });
-              console.log('Ses verisi gönderildi');
+              if (socket.connected) {
+                socket.emit('audio', {
+                  audio: base64Audio,
+                  type: mimeType,
+                  username: username,
+                  timestamp: Date.now()
+                });
+                console.log('Ses verisi gönderildi, boyut:', event.data.size);
+              } else {
+                console.error('Socket bağlantısı yok, ses verisi gönderilemedi');
+              }
             };
             reader.readAsDataURL(event.data);
           } catch (error) {
@@ -72,6 +72,14 @@ const useAudio = (username) => {
       mediaRecorder.onstop = () => {
         console.log('Kayıt durdu');
         setIsRecording(false);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.onerror = (event) => {
+        console.error('Kayıt hatası:', event.error);
+        setError(event.error.message);
+        setIsRecording(false);
+        stream.getTracks().forEach(track => track.stop());
       };
 
       mediaRecorder.start(500); // Her yarım saniyede bir veri gönder

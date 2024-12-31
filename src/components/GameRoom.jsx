@@ -96,7 +96,8 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         console.log('Ses verisi alındı:', {
           from: data.username,
           timestamp: data.timestamp,
-          type: data.type
+          type: data.type,
+          size: data.audio.length
         });
 
         // Base64'ten ArrayBuffer'a çevir
@@ -107,22 +108,36 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         }
 
         // Ses verisini oynat
-        const blob = new Blob([bytes], { type: data.type });
-        const audioUrl = URL.createObjectURL(blob);
-        const audio = new Audio();
+        const blob = new Blob([bytes], { 
+          type: 'audio/webm;codecs=opus' // Sabit format kullan
+        });
         
-        audio.oncanplay = async () => {
-          try {
-            console.log('Ses oynatılmaya hazır');
-            await audio.play();
-            console.log('Ses oynatılıyor');
-          } catch (error) {
+        const audio = new Audio();
+        const audioUrl = URL.createObjectURL(blob);
+        
+        audio.preload = 'auto'; // Sesi önceden yükle
+        
+        audio.onloadedmetadata = () => {
+          console.log('Ses meta verisi yüklendi:', {
+            duration: audio.duration,
+            readyState: audio.readyState
+          });
+        };
+
+        audio.oncanplay = () => {
+          console.log('Ses oynatılmaya hazır');
+          audio.play().catch(error => {
             console.error('Ses oynatma hatası:', error);
-          }
+          });
         };
 
         audio.onerror = (error) => {
-          console.error('Ses yükleme hatası:', error);
+          console.error('Ses yükleme hatası:', {
+            error: error,
+            code: audio.error?.code,
+            message: audio.error?.message
+          });
+          URL.revokeObjectURL(audioUrl);
         };
 
         audio.onended = () => {
