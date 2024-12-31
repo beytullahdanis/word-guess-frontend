@@ -107,17 +107,32 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         }
 
         // Ses verisini oynat
-        const blob = new Blob([bytes], { type: data.type || 'audio/webm' });
-        const audio = new Audio(URL.createObjectURL(blob));
-        await audio.play();
-        console.log('Ses oynatıldı');
-
-        // Kaynakları temizle
-        audio.onended = () => {
-          URL.revokeObjectURL(audio.src);
+        const blob = new Blob([bytes], { type: data.type });
+        const audioUrl = URL.createObjectURL(blob);
+        const audio = new Audio();
+        
+        audio.oncanplay = async () => {
+          try {
+            console.log('Ses oynatılmaya hazır');
+            await audio.play();
+            console.log('Ses oynatılıyor');
+          } catch (error) {
+            console.error('Ses oynatma hatası:', error);
+          }
         };
+
+        audio.onerror = (error) => {
+          console.error('Ses yükleme hatası:', error);
+        };
+
+        audio.onended = () => {
+          console.log('Ses oynatma tamamlandı');
+          URL.revokeObjectURL(audioUrl);
+        };
+
+        audio.src = audioUrl;
       } catch (error) {
-        console.error('Ses oynatma hatası:', error);
+        console.error('Ses işleme hatası:', error);
       }
     });
 
