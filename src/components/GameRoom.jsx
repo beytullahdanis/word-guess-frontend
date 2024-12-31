@@ -306,11 +306,21 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
 
   const handleMicrophoneToggle = async () => {
     if (isRecording) {
-      stopRecording()
+      stopRecording();
     } else {
-      await startRecording()
+      try {
+        await startRecording();
+      } catch (error) {
+        toast({
+          title: 'Mikrofon Hatası',
+          description: error.message || 'Mikrofona erişilemiyor.',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+      }
     }
-  }
+  };
 
   const canSeeWord = () => {
     if (!socket.connected || !isMyTeamsTurn()) return false;
