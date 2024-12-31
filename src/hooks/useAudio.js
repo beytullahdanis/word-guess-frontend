@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import socket from '../socket'
 
-const useAudio = () => {
+const useAudio = (username) => {
   const [isRecording, setIsRecording] = useState(false)
   const [mediaRecorder, setMediaRecorder] = useState(null)
   const [error, setError] = useState(null)
@@ -15,6 +15,7 @@ const useAudio = () => {
 
   const startRecording = async () => {
     try {
+      checkBrowserSupport();
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mimeTypes = [
         'audio/webm',
@@ -63,12 +64,23 @@ const useAudio = () => {
         }
       };
 
-      mediaRecorder.start();
+      mediaRecorder.onstart = () => {
+        console.log('Kayıt başladı');
+        setIsRecording(true);
+      };
+
+      mediaRecorder.onstop = () => {
+        console.log('Kayıt durdu');
+        setIsRecording(false);
+      };
+
+      mediaRecorder.start(500); // Her yarım saniyede bir veri gönder
       setMediaRecorder(mediaRecorder);
       console.log('Ses kaydı başlatıldı');
     } catch (error) {
       console.error('Ses kaydı başlatma hatası:', error);
       setError(error.message);
+      setIsRecording(false);
     }
   };
 

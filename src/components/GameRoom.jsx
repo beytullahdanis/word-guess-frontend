@@ -57,7 +57,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }, [gameState.isPlaying, gameState.currentTeam, roomId]);
 
   const [guess, setGuess] = useState('')
-  const { isRecording, startRecording, stopRecording } = useAudio()
+  const { isRecording, startRecording, stopRecording, error: audioError } = useAudio(username);
   const toast = useToast()
   const [messages, setMessages] = useState([])
   const messagesEndRef = useRef(null)
@@ -292,6 +292,18 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       socket.off('preparationUpdate');
     };
   }, [roomId, username, toast]);
+
+  useEffect(() => {
+    if (audioError) {
+      toast({
+        title: 'Mikrofon Hatası',
+        description: audioError,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  }, [audioError, toast]);
 
   const handleTeamSelect = (team) => {
     if (!socket.connected) {
