@@ -90,6 +90,37 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       socket.emit('selectTeam', { roomId, team: currentTeam });
     }
 
+    // Ses verilerini dinle
+    socket.on('audio', async (data) => {
+      try {
+        console.log('Ses verisi alındı:', {
+          from: data.username,
+          timestamp: data.timestamp,
+          type: data.type
+        });
+
+        // Base64'ten ArrayBuffer'a çevir
+        const binaryString = atob(data.audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        // Ses verisini oynat
+        const blob = new Blob([bytes], { type: data.type || 'audio/webm' });
+        const audio = new Audio(URL.createObjectURL(blob));
+        await audio.play();
+        console.log('Ses oynatıldı');
+
+        // Kaynakları temizle
+        audio.onended = () => {
+          URL.revokeObjectURL(audio.src);
+        };
+      } catch (error) {
+        console.error('Ses oynatma hatası:', error);
+      }
+    });
+
     socket.on('connect_error', (error) => {
       console.error('Socket bağlantı hatası:', error);
       toast({

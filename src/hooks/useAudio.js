@@ -18,6 +18,7 @@ const useAudio = () => {
       setError(null);
       checkBrowserSupport();
 
+      console.log('Mikrofon erişimi isteniyor...');
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
@@ -25,26 +26,39 @@ const useAudio = () => {
           sampleRate: 44100
         } 
       });
+      console.log('Mikrofon erişimi başarılı');
 
-      const recorder = new MediaRecorder(stream, {
-        mimeType: 'audio/webm;codecs=opus'
-      });
+      const recorder = new MediaRecorder(stream);
+      console.log('MediaRecorder oluşturuldu:', recorder.state);
       
-      recorder.ondataavailable = (e) => {
+      recorder.ondataavailable = async (e) => {
         if (e.data.size > 0 && socket.connected) {
-          // Ses verisini blob'a çevir ve socket üzerinden gönder
-          const audioBlob = new Blob([e.data], { type: 'audio/webm' });
-          const reader = new FileReader();
+          console.log('Ses verisi alındı, boyut:', e.data.size);
           
-          reader.onloadend = () => {
-            socket.emit('audio', {
-              audio: reader.result,
-              timestamp: Date.now()
-            });
-          };
-          
-          reader.readAsDataURL(audioBlob);
+          // Ses verisini doğrudan ArrayBuffer olarak gönder
+          const arrayBuffer = await e.data.arrayBuffer();
+          const base64Audio = btoa(
+            new Uint8Array(arrayBuffer)
+              .reduce((data, byte) => data + String.fromCharCode(byte), '')
+          );
+
+          console.log('Ses verisi socket üzerinden gönderiliyor...');
+          socket.emit('audio', {
+            audio: base64Audio,
+            timestamp: Date.now(),
+            type: e.data.type
+          });
         }
+      };
+
+      recorder.onstart = () => {
+        console.log('Kayıt başladı');
+        setIsRecording(true);
+      };
+
+      recorder.onstop = () => {
+        console.log('Kayıt durdu');
+        setIsRecording(false);
       };
 
       recorder.onerror = (event) => {
@@ -53,9 +67,8 @@ const useAudio = () => {
         stopRecording();
       };
 
-      recorder.start(100); // Her 100ms'de bir veri gönder
+      recorder.start(1000); // Her saniyede bir veri gönder
       setMediaRecorder(recorder);
-      setIsRecording(true);
     } catch (error) {
       console.error('Mikrofon erişim hatası:', error);
       setError(error.message || 'Mikrofona erişilemiyor.');
@@ -66,8 +79,12 @@ const useAudio = () => {
   const stopRecording = useCallback(() => {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       try {
+        console.log('Kayıt durduruluyor...');
         mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        mediaRecorder.stream.getTracks().forEach(track => {
+          track.stop();
+          console.log('Ses kanalı kapatıldı');
+        });
       } catch (error) {
         console.error('Kayıt durdurma hatası:', error);
       }
@@ -75,6 +92,14 @@ const useAudio = () => {
       setMediaRecorder(null);
     }
   }, [mediaRecorder]);
+
+  // Socket bağlantısı koptuğunda kaydı durdur
+  socket.on('disconnect', () => {
+    if (isRecording) {
+      console.log('Socket bağlantısı koptu, kayıt durduruluyor...');
+      stopRecording();
+    }
+  });
 
   return {
     isRecording,
