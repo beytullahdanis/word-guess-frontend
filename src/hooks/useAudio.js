@@ -20,23 +20,23 @@ const useAudio = (username) => {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 48000,
+          sampleRate: 44100,
           channelCount: 1
         } 
       });
 
-      // Sabit format kullan
-      const mimeType = 'audio/webm;codecs=opus';
+      // WebM formatını kullan
+      const mimeType = 'audio/webm';
       
       if (!MediaRecorder.isTypeSupported(mimeType)) {
-        throw new Error('Tarayıcınız gerekli ses formatını desteklemiyor');
+        throw new Error('Tarayıcınız WebM ses formatını desteklemiyor');
       }
 
       console.log('Kullanılan ses formatı:', mimeType);
       
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: mimeType,
-        audioBitsPerSecond: 128000
+        audioBitsPerSecond: 96000 // Bit hızını düşür
       });
 
       mediaRecorder.ondataavailable = async (event) => {
@@ -82,7 +82,7 @@ const useAudio = (username) => {
         stream.getTracks().forEach(track => track.stop());
       };
 
-      mediaRecorder.start(500); // Her yarım saniyede bir veri gönder
+      mediaRecorder.start(250); // Daha sık veri gönder
       setMediaRecorder(mediaRecorder);
       console.log('Ses kaydı başlatıldı');
     } catch (error) {

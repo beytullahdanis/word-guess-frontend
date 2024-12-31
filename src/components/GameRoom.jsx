@@ -100,32 +100,23 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
           size: data.audio.length
         });
 
-        // Base64'ten ArrayBuffer'a çevir
-        const binaryString = atob(data.audio);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
+        // Base64'ten Blob'a çevir
+        const byteCharacters = atob(data.audio);
+        const byteNumbers = new Array(byteCharacters.length);
+        
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
         }
-
-        // Ses verisini oynat
-        const blob = new Blob([bytes], { 
-          type: 'audio/webm;codecs=opus' // Sabit format kullan
-        });
         
+        const byteArray = new Uint8Array(byteNumbers);
+        const audioBlob = new Blob([byteArray], { type: 'audio/webm' });
+        
+        // Blob'dan URL oluştur
+        const audioUrl = URL.createObjectURL(audioBlob);
         const audio = new Audio();
-        const audioUrl = URL.createObjectURL(blob);
         
-        audio.preload = 'auto'; // Sesi önceden yükle
-        
-        audio.onloadedmetadata = () => {
-          console.log('Ses meta verisi yüklendi:', {
-            duration: audio.duration,
-            readyState: audio.readyState
-          });
-        };
-
-        audio.oncanplay = () => {
-          console.log('Ses oynatılmaya hazır');
+        audio.oncanplaythrough = () => {
+          console.log('Ses tamamen yüklendi ve oynatılmaya hazır');
           audio.play().catch(error => {
             console.error('Ses oynatma hatası:', error);
           });
