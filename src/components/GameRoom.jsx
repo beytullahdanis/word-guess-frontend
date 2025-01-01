@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   Box,
   Button,
@@ -42,6 +42,13 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     };
   });
 
+  const [guess, setGuess] = useState('')
+  const { isRecording, startRecording, stopRecording, error: audioError } = useAudio(username);
+  const toast = useToast()
+  const [messages, setMessages] = useState([])
+  const messagesEndRef = useRef(null)
+  const audioChunksRef = useRef(new Map())
+
   // gameState değiştiğinde localStorage'a kaydet
   useEffect(() => {
     if (gameState.isPlaying || gameState.scores.team1 > 0 || gameState.scores.team2 > 0) {
@@ -55,12 +62,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       localStorage.removeItem(`gameState_${roomId}`);
     }
   }, [gameState.isPlaying, gameState.currentTeam, roomId]);
-
-  const [guess, setGuess] = useState('')
-  const { isRecording, startRecording, stopRecording, error: audioError } = useAudio(username);
-  const toast = useToast()
-  const [messages, setMessages] = useState([])
-  const messagesEndRef = useRef(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -92,53 +93,89 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
 
     // Ses verilerini dinle
     socket.on('audio', async (data) => {
+      if (!data.audio || !data.type || data.username === username) {
+        return;
+      }
+
       try {
-        console.log('Ses verisi alındı:', {
-          from: data.username,
-          timestamp: data.timestamp,
+        console.log('Ses verisi alındı:', { 
           type: data.type,
-          size: data.audio.length
+          size: data.size,
+          totalSize: data.totalSize,
+          chunkIndex: data.chunkIndex,
+          totalChunks: data.totalChunks,
+          isLastChunk: data.isLastChunk,
+          sampleRate: data.sampleRate,
+          channelCount: data.channelCount
         });
 
-        // Base64'ten Blob'a çevir
-        const byteCharacters = atob(data.audio);
-        const byteNumbers = new Array(byteCharacters.length);
-        
-        for (let i = 0; i < byteCharacters.length; i++) {
-          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        // Ses parçasını sakla
+        if (!audioChunksRef.current.has(data.timestamp)) {
+          audioChunksRef.current.set(data.timestamp, new Map());
         }
-        
-        const byteArray = new Uint8Array(byteNumbers);
-        const audioBlob = new Blob([byteArray], { type: 'audio/webm' });
-        
-        // Blob'dan URL oluştur
-        const audioUrl = URL.createObjectURL(audioBlob);
-        const audio = new Audio();
-        
-        audio.oncanplaythrough = () => {
-          console.log('Ses tamamen yüklendi ve oynatılmaya hazır');
-          audio.play().catch(error => {
-            console.error('Ses oynatma hatası:', error);
+        audioChunksRef.current.get(data.timestamp).set(data.chunkIndex, data.audio);
+
+        // Son parça geldiyse sesi oynat
+        if (data.isLastChunk) {
+          const chunks = audioChunksRef.current.get(data.timestamp);
+          const orderedChunks = Array.from({ length: data.totalChunks }, (_, i) => chunks.get(i));
+          
+          // Tüm parçaları birleştir
+          const base64Audio = orderedChunks.join('');
+          
+          // Base64'ü binary veriye çevir
+          const binary = atob(base64Audio);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+
+          // AudioContext oluştur
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: data.sampleRate
           });
-        };
 
-        audio.onerror = (error) => {
-          console.error('Ses yükleme hatası:', {
-            error: error,
-            code: audio.error?.code,
-            message: audio.error?.message
-          });
-          URL.revokeObjectURL(audioUrl);
-        };
+          try {
+            // ArrayBuffer'ı decode et
+            const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
 
-        audio.onended = () => {
-          console.log('Ses oynatma tamamlandı');
-          URL.revokeObjectURL(audioUrl);
-        };
+            // Ses kaynağı oluştur
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
 
-        audio.src = audioUrl;
+            // Gain node oluştur
+            const gainNode = audioContext.createGain();
+            gainNode.gain.value = 1.0;
+
+            // Bağlantıları yap
+            source.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+
+            // Ses bittiğinde
+            source.onended = () => {
+              console.log('Ses oynatma tamamlandı');
+              audioContext.close().catch(console.error);
+              // Kullanılan parçaları temizle
+              audioChunksRef.current.delete(data.timestamp);
+            };
+
+            // Sesi oynat
+            source.start(0);
+            console.log('Ses oynatma başladı');
+
+          } catch (decodeError) {
+            console.error('Ses decode hatası:', decodeError);
+            audioContext.close().catch(console.error);
+            audioChunksRef.current.delete(data.timestamp);
+          }
+        }
+
       } catch (error) {
         console.error('Ses işleme hatası:', error);
+        // Hata durumunda parçaları temizle
+        if (data.timestamp) {
+          audioChunksRef.current.delete(data.timestamp);
+        }
       }
     });
 
@@ -192,7 +229,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     socket.on('timeUpdate', (data) => {
-      console.log('Süre güncellendi:', data);
       setGameState(prev => ({
         ...prev,
         timeRemaining: data.timeRemaining,
@@ -288,6 +324,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
 
     return () => {
       console.log('Socket event listeners temizleniyor');
+      socket.off('audio');
       socket.off('correctGuess');
       socket.off('wordUpdate');
       socket.off('teamSwitch');
@@ -368,23 +405,26 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     return myTeam === gameState.currentTeam
   }
 
-  const handleMicrophoneToggle = async () => {
-    if (isRecording) {
-      stopRecording();
-    } else {
-      try {
+  const handleMicrophoneToggle = useCallback(async () => {
+    try {
+      if (isRecording) {
+        console.log('Mikrofon kapatılıyor...');
+        await stopRecording();
+      } else {
+        console.log('Mikrofon açılıyor...');
         await startRecording();
-      } catch (error) {
-        toast({
-          title: 'Mikrofon Hatası',
-          description: error.message || 'Mikrofona erişilemiyor.',
-          status: 'error',
-          duration: 3000,
-          isClosable: true,
-        });
       }
+    } catch (error) {
+      console.error('Mikrofon işlemi hatası:', error);
+      toast({
+        title: 'Mikrofon Hatası',
+        description: error.message || 'Mikrofona erişilemiyor.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
     }
-  };
+  }, [isRecording, startRecording, stopRecording, toast]);
 
   const canSeeWord = () => {
     if (!socket.connected || !isMyTeamsTurn()) return false;
@@ -746,6 +786,8 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
                         fontSize="2xl"
                         _hover={{ transform: 'translateY(-2px)', shadow: 'xl' }}
                         transition="all 0.2s"
+                        isLoading={false}
+                        disabled={false}
                       />
                     </HStack>
                   )}

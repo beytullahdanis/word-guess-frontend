@@ -1,121 +1,200 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import socket from '../socket'
 
 const useAudio = (username) => {
-  const [isRecording, setIsRecording] = useState(false)
-  const [mediaRecorder, setMediaRecorder] = useState(null)
-  const [error, setError] = useState(null)
+  const [isRecording, setIsRecording] = useState(false);
+  const [error, setError] = useState(null);
+  const mediaRecorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const isStartingRef = useRef(false);
+  const audioContextRef = useRef(null);
 
-  // Tarayıcı desteğini kontrol et
-  const checkBrowserSupport = () => {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Tarayıcınız mikrofon özelliğini desteklemiyor.');
-    }
-  };
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current = null;
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+      setIsRecording(false);
+    };
+  }, []);
 
-  const startRecording = async () => {
+  const stopRecording = useCallback(() => {
     try {
-      checkBrowserSupport();
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          sampleRate: 44100,
-          channelCount: 1
-        } 
-      });
-
-      // WebM formatını kullan
-      const mimeType = 'audio/webm';
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        console.log('Kayıt durduruluyor...');
+        mediaRecorderRef.current.stop();
+      }
       
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        throw new Error('Tarayıcınız WebM ses formatını desteklemiyor');
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
       }
 
-      console.log('Kullanılan ses formatı:', mimeType);
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
       
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: mimeType,
-        audioBitsPerSecond: 96000 // Bit hızını düşür
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+      setError(null);
+    } catch (error) {
+      console.error('Kayıt durdurma hatası:', error);
+      setError('Kayıt durdurma hatası: ' + error.message);
+    }
+  }, []);
+
+  const startRecording = useCallback(async () => {
+    if (isStartingRef.current || isRecording) {
+      console.log('Kayıt zaten başlatılıyor veya devam ediyor');
+      return;
+    }
+
+    try {
+      isStartingRef.current = true;
+      setError(null);
+
+      // Önceki kaydı temizle
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (mediaRecorderRef.current) {
+        mediaRecorderRef.current = null;
+      }
+      if (audioContextRef.current) {
+        await audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+
+      console.log('Mikrofon erişimi isteniyor...');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 48000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
       });
 
-      mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size > 0) {
+      console.log('Mikrofon erişimi sağlandı');
+      streamRef.current = stream;
+
+      // AudioContext oluştur
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: 48000
+      });
+
+      // Ses kaynağını AudioContext'e bağla
+      const source = audioContextRef.current.createMediaStreamSource(stream);
+      const processor = audioContextRef.current.createScriptProcessor(4096, 1, 1);
+
+      source.connect(processor);
+      processor.connect(audioContextRef.current.destination);
+
+      const mimeType = 'audio/webm;codecs=opus';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        throw new Error('Desteklenen ses formatı bulunamadı');
+      }
+
+      // Ses ayarlarını belirle
+      const audioSettings = {
+        sampleRate: audioContextRef.current.sampleRate,
+        channelCount: 1,
+        bitsPerSecond: 32000
+      };
+
+      console.log('Kayıt başlatılıyor:', { 
+        mimeType,
+        ...audioSettings
+      });
+
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        audioBitsPerSecond: audioSettings.bitsPerSecond
+      });
+
+      recorder.ondataavailable = async (event) => {
+        if (event.data.size > 0 && socket.connected) {
           try {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64Audio = reader.result.split(',')[1];
-              if (socket.connected) {
-                socket.emit('audio', {
-                  audio: base64Audio,
-                  type: mimeType,
-                  username: username,
-                  timestamp: Date.now()
-                });
-                console.log('Ses verisi gönderildi, boyut:', event.data.size);
-              } else {
-                console.error('Socket bağlantısı yok, ses verisi gönderilemedi');
-              }
+            // Blob'u ArrayBuffer'a çevir
+            const arrayBuffer = await event.data.arrayBuffer();
+            
+            // ArrayBuffer'ı Uint8Array'e çevir
+            const uint8Array = new Uint8Array(arrayBuffer);
+            
+            // Chunk'ı base64'e çevir
+            const base64Audio = btoa(String.fromCharCode(...uint8Array));
+
+            // Ses verisi meta bilgileri
+            const audioData = {
+              audio: base64Audio,
+              type: mimeType,
+              username: username,
+              timestamp: Date.now(),
+              size: arrayBuffer.byteLength,
+              sampleRate: 48000,
+              channelCount: 1,
+              format: 'opus'
             };
-            reader.readAsDataURL(event.data);
+
+            console.log('Ses verisi gönderiliyor...', { 
+              size: audioData.size,
+              type: audioData.type,
+              sampleRate: audioData.sampleRate,
+              channelCount: audioData.channelCount,
+              base64Length: base64Audio.length
+            });
+
+            socket.emit('audio', audioData);
           } catch (error) {
             console.error('Ses verisi gönderme hatası:', error);
+            setError('Ses verisi gönderilemedi: ' + error.message);
           }
         }
       };
 
-      mediaRecorder.onstart = () => {
+      recorder.onstart = () => {
         console.log('Kayıt başladı');
         setIsRecording(true);
+        setError(null);
+        isStartingRef.current = false;
       };
 
-      mediaRecorder.onstop = () => {
+      recorder.onstop = () => {
         console.log('Kayıt durdu');
         setIsRecording(false);
-        stream.getTracks().forEach(track => track.stop());
+        isStartingRef.current = false;
+        processor.disconnect();
+        source.disconnect();
       };
 
-      mediaRecorder.onerror = (event) => {
+      recorder.onerror = (event) => {
         console.error('Kayıt hatası:', event.error);
-        setError(event.error.message);
-        setIsRecording(false);
-        stream.getTracks().forEach(track => track.stop());
+        setError('Kayıt hatası: ' + event.error.message);
+        stopRecording();
       };
 
-      mediaRecorder.start(250); // Daha sık veri gönder
-      setMediaRecorder(mediaRecorder);
-      console.log('Ses kaydı başlatıldı');
+      mediaRecorderRef.current = recorder;
+      recorder.start(100);
+
     } catch (error) {
       console.error('Ses kaydı başlatma hatası:', error);
       setError(error.message);
       setIsRecording(false);
-    }
-  };
-
-  const stopRecording = useCallback(() => {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      try {
-        console.log('Kayıt durduruluyor...');
-        mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(track => {
-          track.stop();
-          console.log('Ses kanalı kapatıldı');
-        });
-      } catch (error) {
-        console.error('Kayıt durdurma hatası:', error);
-      }
-      setIsRecording(false);
-      setMediaRecorder(null);
-    }
-  }, [mediaRecorder]);
-
-  // Socket bağlantısı koptuğunda kaydı durdur
-  socket.on('disconnect', () => {
-    if (isRecording) {
-      console.log('Socket bağlantısı koptu, kayıt durduruluyor...');
+      isStartingRef.current = false;
       stopRecording();
     }
-  });
+  }, [username, stopRecording]);
 
   return {
     isRecording,
@@ -125,4 +204,4 @@ const useAudio = (username) => {
   };
 };
 
-export default useAudio; 
+export default useAudio;
