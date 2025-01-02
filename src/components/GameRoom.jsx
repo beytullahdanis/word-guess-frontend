@@ -49,6 +49,62 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   const messagesEndRef = useRef(null)
   const audioContextRef = useRef(null);
 
+  // Audio işleme fonksiyonu
+  const handleAudio = useCallback(async (data) => {
+    try {
+      if (data.username === username) return; // Kendi sesimizi dinlemeyelim
+
+      // AudioContext'i başlat
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({
+          sampleRate: 44100,
+          latencyHint: 'interactive'
+        });
+      }
+      
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
+      // Base64'ten Int16Array'e dönüştür
+      const binaryString = atob(data.audio);
+      const pcmData = new Int16Array(binaryString.length / 2);
+      const byteArray = new Uint8Array(binaryString.length);
+      
+      for (let i = 0; i < binaryString.length; i++) {
+        byteArray[i] = binaryString.charCodeAt(i);
+      }
+      
+      for (let i = 0; i < pcmData.length; i++) {
+        pcmData[i] = (byteArray[i * 2] | (byteArray[i * 2 + 1] << 8));
+      }
+
+      // Int16Array'i Float32Array'e dönüştür
+      const floatData = new Float32Array(pcmData.length);
+      for (let i = 0; i < pcmData.length; i++) {
+        floatData[i] = pcmData[i] / 0x8000;
+      }
+
+      // AudioBuffer oluştur
+      const audioBuffer = audioContextRef.current.createBuffer(
+        data.channels || 1,
+        floatData.length,
+        data.sampleRate || 44100
+      );
+      audioBuffer.getChannelData(0).set(floatData);
+
+      // Ses kaynağı oluştur ve oynat
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioContextRef.current.destination);
+      source.start();
+
+      source.onended = () => source.disconnect();
+    } catch (error) {
+      console.error('Ses işleme hatası:', error);
+    }
+  }, [username]);
+
   // AudioContext'i başlat
   const initAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
@@ -81,7 +137,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
   }, [messages])
 
   useEffect(() => {
-    // Socket'i bağla
     if (!socket.connected) {
       socket.connect();
     }
@@ -89,96 +144,39 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     console.log('Socket bağlantısı kuruldu:', socket.id);
       
     const currentTeam = localStorage.getItem(`team_${roomId}`);
+    
+    // joinRoom event'ini callback ile gönder
     socket.emit('joinRoom', { 
       roomId, 
       username,
       currentTeam
+    }, (error) => {
+      if (error) {
+        console.error('Odaya katılma hatası:', error);
+        toast({
+          title: 'Hata',
+          description: error.message || 'Odaya katılırken bir hata oluştu',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+      } else {
+        console.log('Odaya başarıyla katıldı');
+        // Eğer önceki takım bilgisi varsa, takıma katıl
+        if (currentTeam) {
+          console.log('Önceki takıma yeniden katılınıyor:', currentTeam);
+          socket.emit('selectTeam', { roomId, team: currentTeam }, (error) => {
+            if (error) {
+              console.error('Takım seçme hatası:', error);
+              localStorage.removeItem(`team_${roomId}`);
+            }
+          });
+        }
+      }
     });
 
-    if (currentTeam) {
-      console.log('Önceki takıma yeniden katılınıyor:', currentTeam);
-      socket.emit('selectTeam', { roomId, team: currentTeam });
-    }
-
-    // Ses verilerini işle ve oynat
-    const handleAudio = async (data) => {
-      try {
-        if (data.username === username) return; // Kendi sesimizi dinlemeyelim
-
-        // Debug modunda değilse log'ları gösterme
-        const DEBUG = false;
-        if (DEBUG) {
-          console.log('Ses verisi alındı:', {
-            size: data.audio.length,
-            format: data.format,
-            timestamp: data.timestamp,
-            from: data.username
-          });
-        }
-
-        // AudioContext'i başlat (kullanıcı etkileşimi gerekebilir)
-        if (!audioContextRef.current) {
-          audioContextRef.current = new AudioContext({
-            sampleRate: 44100,
-            latencyHint: 'interactive'
-          });
-        }
-        
-        if (audioContextRef.current.state === 'suspended') {
-          await audioContextRef.current.resume();
-        }
-
-        // Base64'ten Int16Array'e dönüştür
-        const binaryString = atob(data.audio);
-        const pcmData = new Int16Array(binaryString.length / 2);
-        const byteArray = new Uint8Array(binaryString.length);
-        
-        for (let i = 0; i < binaryString.length; i++) {
-          byteArray[i] = binaryString.charCodeAt(i);
-        }
-        
-        for (let i = 0; i < pcmData.length; i++) {
-          pcmData[i] = (byteArray[i * 2] | (byteArray[i * 2 + 1] << 8));
-        }
-
-        // Int16Array'i Float32Array'e dönüştür
-        const floatData = new Float32Array(pcmData.length);
-        for (let i = 0; i < pcmData.length; i++) {
-          floatData[i] = pcmData[i] / 0x8000;
-        }
-
-        // AudioBuffer oluştur
-        const audioBuffer = audioContextRef.current.createBuffer(
-          data.channels || 1,
-          floatData.length,
-          data.sampleRate || 44100
-        );
-        audioBuffer.getChannelData(0).set(floatData);
-
-        // Ses kaynağı oluştur ve oynat
-        const source = audioContextRef.current.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioContextRef.current.destination);
-        source.start();
-
-        if (DEBUG) {
-          console.log('Ses oynatılıyor');
-          source.onended = () => {
-            source.disconnect();
-            console.log('Ses oynatma tamamlandı');
-          };
-        } else {
-          source.onended = () => source.disconnect();
-        }
-      } catch (error) {
-        console.error('Ses işleme hatası:', error);
-      }
-    };
-
+    // Audio event listener'ı ekle
     socket.on('audio', handleAudio);
-
-    // Eski voice event'ini kaldır
-    socket.off('voice');
 
     socket.on('connect_error', (error) => {
       console.error('Socket bağlantı hatası:', error);
@@ -192,7 +190,13 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     socket.on('roomUpdate', (updatedState) => {
-      console.log('Oda güncellendi:', updatedState);
+      console.log('Oda güncellemesi alındı:', updatedState);
+      console.log('Mevcut oyuncu:', username);
+      console.log('Takımlar:', {
+        team1: updatedState.team1,
+        team2: updatedState.team2
+      });
+      
       setGameState(prev => ({
         ...prev,
         ...updatedState
@@ -208,7 +212,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         preparationTime: gameData.preparationTime
       }));
 
-      // Mesajları temizle
       setMessages([]);
 
       toast({
@@ -220,7 +223,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     socket.on('preparationUpdate', (data) => {
-      console.log('Hazırlık süresi güncellendi:', data);
       setGameState(prev => ({
         ...prev,
         preparationTime: data.timeRemaining,
@@ -239,7 +241,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     socket.on('teamSwitch', (data) => {
-      console.log('Takım değişti:', data);
       setGameState(prev => ({
         ...prev,
         currentTeam: data.currentTeam,
@@ -249,16 +250,9 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         isPreparation: true,
         preparationTime: data.preparationTime
       }));
-      toast({
-        title: 'Takım Değişiyor!',
-        description: `${data.currentTeam === 'team1' ? 'Takım 1' : 'Takım 2'} hazırlanıyor...`,
-        status: 'info',
-        duration: 2000,
-      });
     });
 
     socket.on('correctGuess', (data) => {
-      console.log('Doğru tahmin yapıldı:', data);
       setGameState(prev => ({
         ...prev,
         scores: data.scores,
@@ -274,17 +268,9 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
         username: data.guessingPlayer,
         type: 'correct-guess'
       }]);
-
-      toast({
-        title: 'Doğru Tahmin!',
-        description: `${data.guessingPlayer} doğru tahmin etti! ${data.team === 'team1' ? 'Takım 1' : 'Takım 2'} puan kazandı!`,
-        status: 'success',
-        duration: 2000,
-      });
     });
 
     socket.on('wordUpdate', (data) => {
-      console.log('Yeni kelime alındı:', data.currentWord);
       setGameState(prevState => ({
         ...prevState,
         currentWord: data.currentWord,
@@ -295,7 +281,6 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     });
 
     socket.on('gameEnded', (data) => {
-      console.log('Oyun bitti:', data);
       setGameState(prev => ({
         ...prev,
         isPlaying: false,
@@ -306,37 +291,23 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
       }));
 
       setMessages([]);
-
-      let message = '';
-      if (data.winner === 'tie') {
-        message = 'Oyun berabere bitti!';
-      } else {
-        message = `${data.winner === 'team1' ? 'Takım 1' : 'Takım 2'} kazandı!`;
-      }
-
-      toast({
-        title: 'Oyun Bitti!',
-        description: `${message}\nTakım 1: ${data.scores.team1} puan\nTakım 2: ${data.scores.team2} puan`,
-        status: 'info',
-        duration: 5000,
-        isClosable: true,
-      });
     });
 
-    // Cleanup
+    // Cleanup function
     return () => {
       console.log('Socket event listeners temizleniyor');
       socket.off('audio');
+      socket.off('connect_error');
+      socket.off('roomUpdate');
+      socket.off('gameStarted');
+      socket.off('preparationUpdate');
+      socket.off('timeUpdate');
+      socket.off('teamSwitch');
       socket.off('correctGuess');
       socket.off('wordUpdate');
-      socket.off('teamSwitch');
-      socket.off('gameStarted');
-      socket.off('timeUpdate');
       socket.off('gameEnded');
-      socket.off('roomUpdate');
-      socket.off('preparationUpdate');
     };
-  }, [roomId, username, toast]);
+  }, [roomId, username, toast, handleAudio]);
 
   useEffect(() => {
     if (audioError) {
@@ -352,12 +323,42 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
 
   const handleTeamSelect = (team) => {
     if (!socket.connected) {
-      console.error('Socket bağlantısı yok')
-      return
+      console.error('Socket bağlantısı yok');
+      toast({
+        title: 'Hata',
+        description: 'Sunucu bağlantısı yok. Lütfen sayfayı yenileyin.',
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+      return;
     }
-    console.log('Takım seçiliyor:', team)
-    localStorage.setItem(`team_${roomId}`, team);
-    socket.emit('selectTeam', { roomId, team })
+
+    console.log('Takım seçme isteği gönderiliyor:', { team, username });
+    
+    socket.emit('selectTeam', { roomId, team }, (error) => {
+      if (error) {
+        console.error('Takım seçme hatası:', error);
+        toast({
+          title: 'Hata',
+          description: error.message || 'Takım seçilirken bir hata oluştu',
+          status: 'error',
+          duration: 3000,
+          isClosable: true,
+        });
+        localStorage.removeItem(`team_${roomId}`);
+      } else {
+        console.log('Takım başarıyla seçildi:', team);
+        localStorage.setItem(`team_${roomId}`, team);
+        toast({
+          title: 'Başarılı',
+          description: `${team === 'team1' ? 'Takım 1' : 'Takım 2'}'e katıldınız`,
+          status: 'success',
+          duration: 2000,
+          isClosable: true,
+        });
+      }
+    });
   }
 
   const handleStartGame = () => {
@@ -390,9 +391,9 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
     setGuess('');
   };
 
-  const isInTeam = (player) => {
-    const inTeam1 = gameState.team1.some(p => p.username === player.username)
-    const inTeam2 = gameState.team2.some(p => p.username === player.username)
+  const isInTeam = (username) => {
+    const inTeam1 = gameState.team1.some(p => p.username === username)
+    const inTeam2 = gameState.team2.some(p => p.username === username)
     return inTeam1 || inTeam2
   }
 
@@ -591,7 +592,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
                       )}
                     </Text>
                   ))}
-                  {!isInTeam({username}) && !gameState.isPlaying && (
+                  {!isInTeam(username) && !gameState.isPlaying && (
                     <Button
                       colorScheme="blue"
                       size="lg"
@@ -678,7 +679,7 @@ function GameRoom({ roomId, username, onLeaveRoom }) {
                       )}
                     </Text>
                   ))}
-                  {!isInTeam({username}) && !gameState.isPlaying && (
+                  {!isInTeam(username) && !gameState.isPlaying && (
                     <Button
                       colorScheme="red"
                       size="lg"

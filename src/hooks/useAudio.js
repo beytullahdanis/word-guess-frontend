@@ -7,6 +7,7 @@ const useAudio = (username, roomId) => {
   const peerConnectionsRef = useRef({});
   const localStreamRef = useRef(null);
   const remoteAudioRefs = useRef({});
+  const audioContextRef = useRef(null);
 
   // WebRTC yapılandırması
   const configuration = {
@@ -168,107 +169,110 @@ const useAudio = (username, roomId) => {
 
   const startRecording = useCallback(async () => {
     try {
-      console.log('Kayıt başlatılıyor...', { username, roomId });
+      console.log('Ses kaydı başlatılıyor...', { username, roomId });
       
       if (!roomId) {
-        throw new Error('Oda ID gerekli');
+        throw new Error('RoomId bulunamadı');
       }
 
       // Socket bağlantısını kontrol et
       if (!socket.connected) {
-        console.log('Socket bağlantısı yok, bağlanmayı deniyorum...');
-        socket.connect();
-        await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            reject(new Error('Socket bağlantı zaman aşımı'));
-          }, 5000);
-
-          socket.once('connect', () => {
-            clearTimeout(timeout);
-            resolve();
-          });
-        });
+        console.error('Socket bağlantısı kopuk');
+        throw new Error('Socket bağlantısı kopuk');
       }
-      
-      checkSocketConnection();
 
-      // Önceki kaynakları temizle
-      cleanupResources();
-
-      // Mikrofon erişimi al
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // Mikrofon erişimi iste
+      console.log('Mikrofon erişimi isteniyor...');
+      const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: 48000,
-          channelCount: 1
-        }
+          autoGainControl: true
+        } 
       });
-
+      
       console.log('Mikrofon erişimi alındı');
-      validateStream(stream);
       localStreamRef.current = stream;
 
-      // Ses iletimini başlat
+      // Stream kontrolü
+      validateStream(stream);
+
       return new Promise(async (resolve, reject) => {
         try {
-          console.log('Ses iletimi başlatılıyor...');
+          console.log('Ses iletimi başlatılıyor...', { roomId });
           
-          // Socket bağlantı durumunu kontrol et
-          if (!socket.connected) {
-            reject(new Error('Socket bağlantısı kopuk'));
-            return;
-          }
-
           // AudioContext oluştur
           const audioContext = new AudioContext({
             sampleRate: 44100,
             latencyHint: 'interactive'
           });
+
           const source = audioContext.createMediaStreamSource(localStreamRef.current);
           const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          
+          let lastSendTime = Date.now();
+          const SEND_INTERVAL = 100; // 100ms
 
-          let lastSendTime = 0;
-          const SEND_INTERVAL = 50;
-
-          // Ses verilerini işle
           processor.onaudioprocess = (e) => {
-            const now = Date.now();
-            if (now - lastSendTime < SEND_INTERVAL) return;
-            
-            const inputData = e.inputBuffer.getChannelData(0);
-            
-            // Ses seviyesini kontrol et
-            let maxVolume = 0;
-            for (let i = 0; i < inputData.length; i++) {
-              maxVolume = Math.max(maxVolume, Math.abs(inputData[i]));
+            try {
+              const now = Date.now();
+              if (now - lastSendTime < SEND_INTERVAL) return;
+
+              const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Ses seviyesini kontrol et
+              let maxVolume = 0;
+              for (let i = 0; i < inputData.length; i++) {
+                maxVolume = Math.max(maxVolume, Math.abs(inputData[i]));
+              }
+              
+              // Ses seviyesi çok düşükse gönderme
+              if (maxVolume < 0.01) return;
+
+              // Float32Array'i Int16Array'e dönüştür
+              const pcmData = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) {
+                const s = Math.max(-1, Math.min(1, inputData[i]));
+                pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              }
+
+              // Int16Array'i Base64'e dönüştür
+              const base64data = btoa(String.fromCharCode.apply(null, new Uint8Array(pcmData.buffer)));
+
+              // Ses verisini gönder
+              if (socket.connected) {
+                const audioData = {
+                  audio: base64data,
+                  username,
+                  roomId: roomId.toString(),
+                  timestamp: now,
+                  sampleRate: audioContext.sampleRate,
+                  channels: 1,
+                  format: 'pcm'
+                };
+
+                console.log('Ses verisi gönderiliyor:', {
+                  username,
+                  roomId: audioData.roomId,
+                  dataLength: base64data.length,
+                  timestamp: now
+                });
+
+                socket.emit('audio', audioData, (error) => {
+                  if (error) {
+                    console.error('Ses verisi gönderme hatası:', error);
+                  } else {
+                    console.log('Ses verisi başarıyla gönderildi');
+                  }
+                });
+
+                lastSendTime = now;
+              } else {
+                console.error('Socket bağlantısı kopuk, ses verisi gönderilemedi');
+              }
+            } catch (error) {
+              console.error('Ses verisi işleme hatası:', error);
             }
-            
-            // Ses seviyesi çok düşükse gönderme
-            if (maxVolume < 0.01) return;
-
-            // Float32Array'i Int16Array'e dönüştür
-            const pcmData = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) {
-              const s = Math.max(-1, Math.min(1, inputData[i]));
-              pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-
-            // Int16Array'i Base64'e dönüştür
-            const base64data = btoa(String.fromCharCode.apply(null, new Uint8Array(pcmData.buffer)));
-
-            // Ses verisini gönder
-            socket.emit('audio', {
-              audio: base64data,
-              username,
-              timestamp: now,
-              sampleRate: audioContext.sampleRate,
-              channels: 1,
-              format: 'pcm'
-            });
-
-            lastSendTime = now;
           };
 
           // Ses işleme zincirini bağla
@@ -290,7 +294,88 @@ const useAudio = (username, roomId) => {
       setIsRecording(false);
       throw err;
     }
-  }, [username, roomId, createPeerConnection, checkSocketConnection, validateStream, cleanupResources]);
+  }, [username, roomId, validateStream, cleanupResources]);
+
+  // Audio işleme fonksiyonu
+  const handleAudio = useCallback(async (data) => {
+    try {
+      if (data.username === username) {
+        return; // Kendi sesimizi dinlemeyelim
+      }
+
+      console.log('Ses verisi alındı:', {
+        from: data.username,
+        dataLength: data.audio.length,
+        timestamp: data.timestamp
+      });
+
+      // AudioContext'i başlat
+      if (!audioContextRef.current) {
+        audioContextRef.current = new AudioContext({
+          sampleRate: data.sampleRate || 44100,
+          latencyHint: 'interactive'
+        });
+      }
+      
+      if (audioContextRef.current.state === 'suspended') {
+        await audioContextRef.current.resume();
+      }
+
+      // Base64'ten Int16Array'e dönüştür
+      const binaryString = atob(data.audio);
+      const pcmData = new Int16Array(binaryString.length / 2);
+      const byteArray = new Uint8Array(binaryString.length);
+      
+      for (let i = 0; i < binaryString.length; i++) {
+        byteArray[i] = binaryString.charCodeAt(i);
+      }
+      
+      for (let i = 0; i < pcmData.length; i++) {
+        pcmData[i] = (byteArray[i * 2] | (byteArray[i * 2 + 1] << 8));
+      }
+
+      // Int16Array'i Float32Array'e dönüştür
+      const floatData = new Float32Array(pcmData.length);
+      for (let i = 0; i < pcmData.length; i++) {
+        floatData[i] = pcmData[i] / 0x8000;
+      }
+
+      // AudioBuffer oluştur
+      const audioBuffer = audioContextRef.current.createBuffer(
+        data.channels || 1,
+        floatData.length,
+        data.sampleRate || 44100
+      );
+      audioBuffer.getChannelData(0).set(floatData);
+
+      // Ses kaynağı oluştur
+      const source = audioContextRef.current.createBufferSource();
+      source.buffer = audioBuffer;
+
+      // Gain node ekle
+      const gainNode = audioContextRef.current.createGain();
+      gainNode.gain.value = 2.0; // Ses seviyesini artır
+
+      // Bağlantıları yap
+      source.connect(gainNode);
+      gainNode.connect(audioContextRef.current.destination);
+
+      // Sesi oynat
+      source.start(0);
+      console.log('Ses oynatılıyor:', {
+        from: data.username,
+        duration: audioBuffer.duration
+      });
+
+      // Kaynağı temizle
+      source.onended = () => {
+        source.disconnect();
+        gainNode.disconnect();
+      };
+    } catch (error) {
+      console.error('Ses işleme hatası:', error);
+    }
+  }, [username]);
 
   // Socket event listener'ları
   useEffect(() => {
@@ -355,6 +440,22 @@ const useAudio = (username, roomId) => {
       cleanupResources();
     };
   }, [username, createPeerConnection, cleanupResources]);
+
+  // useEffect içinde socket event listener'ı ekle
+  useEffect(() => {
+    if (!socket.connected) {
+      console.log('Socket bağlantısı bekleniyor...');
+      return;
+    }
+
+    console.log('Audio event listener\'ı ekleniyor');
+    socket.on('audio', handleAudio);
+
+    return () => {
+      console.log('Audio event listener\'ı kaldırılıyor');
+      socket.off('audio', handleAudio);
+    };
+  }, [handleAudio]);
 
   return {
     isRecording,
